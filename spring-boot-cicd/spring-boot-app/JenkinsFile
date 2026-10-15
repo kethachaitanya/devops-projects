@@ -1,146 +1,199 @@
+
 pipeline {
-  agent {
-    docker {
-      image 'abhishekf5/maven-abhishek-docker-agent:v1'
-      args '--user root -v /var/run/docker.sock:/var/run/docker.sock'
-    }
-  }
-
-  options {
-    disableConcurrentBuilds()
-    buildDiscarder(logRotator(numToKeepStr: '20'))
-    timestamps()
-    timeout(time: 45, unit: 'MINUTES')
-  }
-
-  environment {
-    PROJECT_DIR = 'java-maven-sonar-argocd-helm-k8s'
-    APP_DIR = "${PROJECT_DIR}/spring-boot-app"
-
-    // CHALLENGE 04: This path is deliberately wrong.
-    // Fix it after Maven, Sonar, and Trivy are passing.
-    MANIFEST_FILE = "${PROJECT_DIR}/spring-boot-app-manifests/deployment-wrong.yml"
-
-    // Change these values for your Docker Hub and GitHub account.
-    DOCKER_REPO = 'YOUR_DOCKERHUB_USER/ultimate-cicd'
-    GIT_USER_NAME = 'YOUR_GITHUB_USER'
-    GIT_REPO_NAME = 'YOUR_REPO_NAME'
-    GIT_BRANCH_NAME = 'main'
-
-    SONAR_URL = 'http://YOUR_SONARQUBE_HOST:9000'
-    NAMESPACE = 'spring-boot'
-    DEPLOYMENT_NAME = 'spring-boot-app'
-    ARGO_APP = 'spring-boot-app'
-  }
-
-  stages {
-    stage('Checkout') {
-      steps {
-        checkout scm
-        sh 'git rev-parse --short HEAD'
-      }
+    agent {
+        docker {
+            image 'abhishekf5/maven-abhishek-docker-agent:v1'
+            args '--user root -v /var/run/docker.sock:/var/run/docker.sock'
+        }
     }
 
-    stage('Build and Unit Test') {
-      steps {
-        sh 'cd "$APP_DIR" && mvn -B clean verify'
-      }
-      post {
+    options {
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        timestamps()
+        timeout(time: 45, unit: 'MINUTES')
+    }
+
+    environment {
+        // Project structure in Jenkins-Zero-To-Hero
+        PROJECT_DIR = 'java-maven-sonar-argocd-helm-k8s'
+        APP_DIR = "${PROJECT_DIR}/spring-boot-app"
+
+        // Kubernetes manifest
+        MANIFEST_FILE = "${PROJECT_DIR}/spring-boot-app-manifests/deployment.yml"
+
+        // Docker Hub
+        DOCKER_REPO = 'chaitanya0004/ultimate-cicd'
+
+        // GitHub repository
+        GIT_USER_NAME = 'kethachaitanya'
+        GIT_REPO_NAME = 'Jenkins-Zero-To-Hero'
+        GIT_BRANCH_NAME = 'main'
+
+        // SonarQube
+        SONAR_URL = 'http://54.162.81.103:9000'
+
+        // Kubernetes and Argo CD
+        NAMESPACE = 'sample-app'
+        DEPLOYMENT_NAME = 'spring-boot-app'
+        ARGO_APP = 'spring-boot-app'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh 'git rev-parse --short HEAD'
+                sh 'test -f "$APP_DIR/pom.xml"'
+                sh 'test -f "$APP_DIR/Dockerfile"'
+            }
+        }
+
+        stage('Build and Unit Test') {
+            steps {
+                dir("${APP_DIR}") {
+                    sh 'mvn -B clean verify'
+                }
+            }
+
+            post {
+                always {
+                    junit allowEmptyResults: true,
+                          testResults: "${APP_DIR}/target/surefire-reports/*.xml"
+
+                    archiveArtifacts artifacts: "${APP_DIR}/target/*.jar",
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Static Code Analysis') {
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'sonarqube',
+                        variable: 'SONAR_AUTH_TOKEN'
+                    )
+                ]) {
+                    dir("${APP_DIR}") {
+                        sh '''
+                            mvn -B sonar:sonar \
+                              -Dsonar.host.url="$SONAR_URL" \
+                              -Dsonar.token="$SONAR_AUTH_TOKEN"
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    def shortSha = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+
+                    env.IMAGE_TAG = "${env.BUILD_NUMBER}-${shortSha}"
+                    env.DOCKER_IMAGE = "${env.DOCKER_REPO}:${env.IMAGE_TAG}"
+                }
+
+                dir("${APP_DIR}") {
+                    sh 'docker build -t "$DOCKER_IMAGE" .'
+                }
+            }
+        }
+
+        stage('Scan Docker Image') {
+            steps {
+                sh '''
+                    mkdir -p trivy-reports
+                    "$PROJECT_DIR/scripts/trivy-scan.sh" "$DOCKER_IMAGE"
+                '''
+            }
+
+            post {
+                always {
+                    archiveArtifacts artifacts: 'trivy-reports/*',
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    docker.withRegistry(
+                        'https://index.docker.io/v1/',
+                        'docker-cred'
+                    ) {
+                        docker.image(env.DOCKER_IMAGE).push()
+                    }
+                }
+            }
+        }
+
+        stage('Update GitOps Manifest') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'github',
+                        variable: 'GITHUB_TOKEN'
+                    )
+                ]) {
+                    sh '''
+                        git config user.email "kethachaitanya0004@gmail.com"
+                        git config user.name "chaitanya2004"
+
+                        git remote set-url origin \
+                          "https://x-access-token:${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git"
+
+                        "$PROJECT_DIR/scripts/update-gitops-image.sh" \
+                          "$DOCKER_IMAGE" \
+                          "$MANIFEST_FILE" \
+                          "$GIT_BRANCH_NAME"
+                    '''
+                }
+            }
+        }
+
+        stage('Verify Rollout and Rollback') {
+            when {
+                branch 'main'
+            }
+
+            steps {
+                sh '''
+                    "$PROJECT_DIR/scripts/verify-rollout-and-rollback.sh"
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Release completed: ${env.DOCKER_IMAGE}"
+        }
+
+        failure {
+            echo 'Pipeline failed. Check the failed stage and its logs.'
+        }
+
         always {
-          junit allowEmptyResults: true, testResults: "${APP_DIR}/target/surefire-reports/*.xml"
-          archiveArtifacts artifacts: "${APP_DIR}/target/*.jar", allowEmptyArchive: true
+            cleanWs deleteDirs: true, disableDeferredWipeout: true
         }
-      }
     }
-
-    stage('Static Code Analysis') {
-      steps {
-        withCredentials([string(credentialsId: 'sonarqube', variable: 'SONAR_AUTH_TOKEN')]) {
-          sh '''
-            cd "$APP_DIR"
-            mvn -B sonar:sonar \
-              -Dsonar.host.url="$SONAR_URL" \
-              -Dsonar.login="$SONAR_AUTH_TOKEN"
-          '''
-        }
-      }
-    }
-
-    stage('Quality Gate') {
-      steps {
-        timeout(time: 5, unit: 'MINUTES') {
-          waitForQualityGate abortPipeline: true
-        }
-      }
-    }
-
-    stage('Build Docker Image') {
-      steps {
-        script {
-          def shortSha = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-          env.IMAGE_TAG = "${env.BUILD_NUMBER}-${shortSha}"
-          env.DOCKER_IMAGE = "${env.DOCKER_REPO}:${env.IMAGE_TAG}"
-        }
-        sh 'cd "$APP_DIR" && docker build -t "$DOCKER_IMAGE" .'
-      }
-    }
-
-    stage('Scan Docker Image') {
-      steps {
-        sh '"$PROJECT_DIR/scripts/trivy-scan.sh" "$DOCKER_IMAGE"'
-      }
-      post {
-        always {
-          archiveArtifacts artifacts: 'trivy-reports/*', allowEmptyArchive: true
-        }
-      }
-    }
-
-    stage('Push Docker Image') {
-      steps {
-        script {
-          docker.withRegistry('https://index.docker.io/v1/', 'docker-cred') {
-            docker.image(env.DOCKER_IMAGE).push()
-          }
-        }
-      }
-    }
-
-    stage('Update GitOps Manifest') {
-      when {
-        branch 'main'
-      }
-      steps {
-        withCredentials([string(credentialsId: 'github', variable: 'GITHUB_TOKEN')]) {
-          sh '''
-            git config user.email "jenkins@example.com"
-            git config user.name "jenkins-cicd"
-            git remote set-url origin "https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git"
-            "$PROJECT_DIR/scripts/update-gitops-image.sh" "$DOCKER_IMAGE" "$MANIFEST_FILE" "$GIT_BRANCH_NAME"
-          '''
-        }
-      }
-    }
-
-    stage('Verify Rollout and Rollback') {
-      when {
-        branch 'main'
-      }
-      steps {
-        sh '"$PROJECT_DIR/scripts/verify-rollout-and-rollback.sh"'
-      }
-    }
-  }
-
-  post {
-    success {
-      echo "Release completed: ${DOCKER_IMAGE}"
-    }
-    failure {
-      echo 'Pipeline failed. This is expected while solving the advanced CI/CD challenges.'
-    }
-    always {
-      cleanWs deleteDirs: true, disableDeferredWipeout: true
-    }
-  }
 }
+
