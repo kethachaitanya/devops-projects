@@ -15,19 +15,19 @@ pipeline {
     }
 
     environment {
-        // Project structure in Jenkins-Zero-To-Hero
-        PROJECT_DIR = 'java-maven-sonar-argocd-helm-k8s'
+        // Repository layout
+        PROJECT_DIR = 'spring-boot-cicd'
         APP_DIR = "${PROJECT_DIR}/spring-boot-app"
-
-        // Kubernetes manifest
-        MANIFEST_FILE = "${PROJECT_DIR}/spring-boot-app-manifests/deployment.yml"
+        MANIFEST_DIR = "${PROJECT_DIR}/spring-boot-app-manifests"
+        MANIFEST_FILE = "${MANIFEST_DIR}/deployment.yml"
+        SCRIPTS_DIR = "${PROJECT_DIR}/scripts"
 
         // Docker Hub
         DOCKER_REPO = 'chaitanya0004/ultimate-cicd'
 
-        // GitHub repository
+        // GitHub
         GIT_USER_NAME = 'kethachaitanya'
-        GIT_REPO_NAME = 'Jenkins-Zero-To-Hero'
+        GIT_REPO_NAME = 'devops-projects'
         GIT_BRANCH_NAME = 'main'
 
         // SonarQube
@@ -40,12 +40,43 @@ pipeline {
     }
 
     stages {
-        stage('Checkout') {
+
+        stage('Checkout and Validate') {
             steps {
                 checkout scm
-                sh 'git rev-parse --short HEAD'
-                sh 'test -f "$APP_DIR/pom.xml"'
-                sh 'test -f "$APP_DIR/Dockerfile"'
+
+                sh '''
+                    set -eu
+
+                    echo "Current workspace:"
+                    pwd
+
+                    echo "Checking project structure..."
+
+                    test -f "$APP_DIR/pom.xml" || {
+                        echo "ERROR: pom.xml not found at $APP_DIR/pom.xml"
+                        find . -maxdepth 5 -name pom.xml -print
+                        exit 1
+                    }
+
+                    test -f "$APP_DIR/Dockerfile" || {
+                        echo "ERROR: Dockerfile not found at $APP_DIR/Dockerfile"
+                        find . -maxdepth 5 -name Dockerfile -print
+                        exit 1
+                    }
+
+                    test -f "$MANIFEST_FILE" || {
+                        echo "ERROR: Kubernetes manifest not found: $MANIFEST_FILE"
+                        find . -maxdepth 5 \\( -name '*.yaml' -o -name '*.yml' \\) -print
+                        exit 1
+                    }
+
+                    test -f "$SCRIPTS_DIR/trivy-scan.sh"
+                    test -f "$SCRIPTS_DIR/update-gitops-image.sh"
+                    test -f "$SCRIPTS_DIR/verify-rollout-and-rollback.sh"
+
+                    git rev-parse --short HEAD
+                '''
             }
         }
 
@@ -58,11 +89,15 @@ pipeline {
 
             post {
                 always {
-                    junit allowEmptyResults: true,
-                          testResults: "${APP_DIR}/target/surefire-reports/*.xml"
+                    junit(
+                        allowEmptyResults: true,
+                        testResults: "${APP_DIR}/target/surefire-reports/*.xml"
+                    )
 
-                    archiveArtifacts artifacts: "${APP_DIR}/target/*.jar",
-                                     allowEmptyArchive: true
+                    archiveArtifacts(
+                        artifacts: "${APP_DIR}/target/*.jar",
+                        allowEmptyArchive: true
+                    )
                 }
             }
         }
@@ -107,8 +142,13 @@ pipeline {
                 }
 
                 dir("${APP_DIR}") {
-                    sh 'docker build -t "$DOCKER_IMAGE" .'
+                    sh '''
+                        docker build \
+                          -t "$DOCKER_IMAGE" .
+                    '''
                 }
+
+                echo "Built image: ${env.DOCKER_IMAGE}"
             }
         }
 
@@ -116,14 +156,19 @@ pipeline {
             steps {
                 sh '''
                     mkdir -p trivy-reports
-                    "$PROJECT_DIR/scripts/trivy-scan.sh" "$DOCKER_IMAGE"
+
+                    chmod +x "$SCRIPTS_DIR/trivy-scan.sh"
+
+                    "$SCRIPTS_DIR/trivy-scan.sh" "$DOCKER_IMAGE"
                 '''
             }
 
             post {
                 always {
-                    archiveArtifacts artifacts: 'trivy-reports/*',
-                                     allowEmptyArchive: true
+                    archiveArtifacts(
+                        artifacts: 'trivy-reports/**',
+                        allowEmptyArchive: true
+                    )
                 }
             }
         }
@@ -154,13 +199,19 @@ pipeline {
                     )
                 ]) {
                     sh '''
-                        git config user.email "kethachaitanya0004@gmail.com"
+                        set -eu
+
+                        git config user.email \
+                          "kethachaitanya0004@gmail.com"
+
                         git config user.name "chaitanya2004"
 
                         git remote set-url origin \
                           "https://x-access-token:${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git"
 
-                        "$PROJECT_DIR/scripts/update-gitops-image.sh" \
+                        chmod +x "$SCRIPTS_DIR/update-gitops-image.sh"
+
+                        "$SCRIPTS_DIR/update-gitops-image.sh" \
                           "$DOCKER_IMAGE" \
                           "$MANIFEST_FILE" \
                           "$GIT_BRANCH_NAME"
@@ -176,7 +227,9 @@ pipeline {
 
             steps {
                 sh '''
-                    "$PROJECT_DIR/scripts/verify-rollout-and-rollback.sh"
+                    chmod +x "$SCRIPTS_DIR/verify-rollout-and-rollback.sh"
+
+                    "$SCRIPTS_DIR/verify-rollout-and-rollback.sh"
                 '''
             }
         }
@@ -184,15 +237,19 @@ pipeline {
 
     post {
         success {
-            echo "Release completed: ${env.DOCKER_IMAGE}"
+            echo "CI/CD pipeline completed successfully."
+            echo "Docker image: ${env.DOCKER_IMAGE}"
         }
 
         failure {
-            echo 'Pipeline failed. Check the failed stage and its logs.'
+            echo 'Pipeline failed. Check the first failing stage in Console Output.'
         }
 
         always {
-            cleanWs deleteDirs: true, disableDeferredWipeout: true
+            cleanWs(
+                deleteDirs: true,
+                disableDeferredWipeout: true
+            )
         }
     }
 }
