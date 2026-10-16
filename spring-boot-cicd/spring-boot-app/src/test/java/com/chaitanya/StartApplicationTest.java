@@ -10,6 +10,6 @@ class StartApplicationTest {
 
     @Test
     void challenge01BuildMustFailUntilYouFixThisAssertion() {
-        assertEquals("pipeline should pass", "pipeline should fail first");
+        assertEquals("pipeline should pass", "pipeline should pass");
     }
 }
