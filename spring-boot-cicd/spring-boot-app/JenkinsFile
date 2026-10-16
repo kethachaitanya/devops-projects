@@ -31,7 +31,7 @@ pipeline {
         GIT_BRANCH_NAME = 'main'
 
         // SonarQube
-        SONAR_URL = 'http://54.162.81.103:9000'
+        SONAR_URL = '-Dsonar.host.url=http://172.31.39.60:9000'
 
         // Kubernetes and Argo CD
         NAMESPACE = 'sample-app'
