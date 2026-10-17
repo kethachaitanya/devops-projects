@@ -103,6 +103,7 @@ pipeline {
         }
 
 
+
 stage('Static Code Analysis') {
     steps {
         withCredentials([
@@ -114,11 +115,13 @@ stage('Static Code Analysis') {
             dir("${APP_DIR}") {
                 withEnv(["SONAR_USER_HOME=${WORKSPACE}/.sonar"]) {
                     sh '''
+                        set -eu
                         mkdir -p "$SONAR_USER_HOME"
 
-                        mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.2.0.4988:sonar \
-                          -Dsonar.host.url="$SONAR_URL" \
-                          -Dsonar.token="$SONAR_AUTH_TOKEN"
+                        mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:5.2.0.4988:sonar \
+                          "-Dsonar.host.url=http://52.87.194.142:9000" \
+                          "-Dsonar.token=$SONAR_AUTH_TOKEN" \
+                          "-Dsonar.projectKey=spring-boot-cicd"
                     '''
                 }
             }
