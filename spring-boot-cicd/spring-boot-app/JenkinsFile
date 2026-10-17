@@ -104,25 +104,29 @@ pipeline {
 
 
 
+
 stage('Static Code Analysis') {
     steps {
-        withCredentials([
-            string(
-                credentialsId: 'sonarqube',
-                variable: 'SONAR_AUTH_TOKEN'
-            )
-        ]) {
-            dir("${APP_DIR}") {
-                withEnv(["SONAR_USER_HOME=${WORKSPACE}/.sonar"]) {
-                    sh '''
-                        set -eu
-                        mkdir -p "$SONAR_USER_HOME"
+        withSonarQubeEnv('sonarqube') {
+            withCredentials([
+                string(
+                    credentialsId: 'sonarqube',
+                    variable: 'SONAR_AUTH_TOKEN'
+                )
+            ]) {
+                dir("${APP_DIR}") {
+                    withEnv(["SONAR_USER_HOME=${WORKSPACE}/.sonar"]) {
+                        sh '''
+                            set -eu
+                            mkdir -p "$SONAR_USER_HOME"
 
-                        mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:5.2.0.4988:sonar \
-                          "-Dsonar.host.url=http://52.87.194.142:9000" \
-                          "-Dsonar.token=$SONAR_AUTH_TOKEN" \
-                          "-Dsonar.projectKey=spring-boot-cicd"
-                    '''
+                            mvn -B \
+                              org.sonarsource.scanner.maven:sonar-maven-plugin:5.2.0.4988:sonar \
+                              "-Dsonar.host.url=$SONAR_HOST_URL" \
+                              "-Dsonar.token=$SONAR_AUTH_TOKEN" \
+                              "-Dsonar.projectKey=spring-boot-cicd"
+                        '''
+                    }
                 }
             }
         }
