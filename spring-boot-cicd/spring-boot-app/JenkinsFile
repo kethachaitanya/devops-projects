@@ -2,7 +2,7 @@
 pipeline {
     agent {
         docker {
-            image 'abhishekf5/maven-abhishek-docker-agent:v1'
+            image 'jenkins-maven-docker-agent:v2'
             args '--user 105:109 --group-add 110 -v /var/run/docker.sock:/var/run/docker.sock'
         }
     }
